@@ -1,3 +1,4 @@
+
 #include <stdio.h>
 #include <iostream>
 #include <fstream>
@@ -7,20 +8,20 @@
 #include <stack>
 #include <random>
 #include <ctime>
-
+#include <chrono>
 using namespace std;
 
 unsigned char memory[4096] = {0}; //4096 bytes of RAM
 unsigned char registers[16] = {0}; //16 8-bit general purpose registers
-char delay_timer; //is decremented at a rate of 60Hz until it reaches 0
-char sound_timer; //gives off a beeping sound as long as it’s not 0
+char delay_timer = 0; //is decremented at a rate of 60Hz until it reaches 0
+char sound_timer = 0; //gives off a beeping sound as long as it’s not 0
 
 int PC = 0; //program counter - stores the currently executing address
 char SP = 0; //stack counter - used to point to the topmost level of the stack.
 int I = 0; //index register - points at locations in memory
 stack<int> routine_stack; //Used to store the address that the interpreter should return to when finished with a subroutine
 
-int frequency = 700;
+double timer_frequency = 60;
 const char* keyPressed = nullptr;
 const int SCREEN_WIDTH = 64;
 const int SCREEN_HEIGHT = 32;
@@ -221,6 +222,10 @@ void instruction_skip() {
 	PC = PC + 2;
 }
 
+void instruction_decrement() {
+	PC = PC - 2;
+}
+
 int instruction_add(char register_num, char thirdNibble, char fourthNibble) {
 	char additive = (thirdNibble << 4) + fourthNibble;
 	registers[register_num] += additive;
@@ -234,29 +239,34 @@ int instruction_set_index(char secondNibble, char thirdNibble, char fourthNibble
 
 int instruction_bitshift_right(char secondNibble, char thirdNibble) {
 	registers[secondNibble] = registers[thirdNibble];
-	char bit_shifted = registers[secondNibble] & 1;
+	unsigned char bit_shifted = registers[secondNibble] & 1;
 	if (bit_shifted == 1) {
-		registers[15] = 1;
+		registers[0xF] = 1;
 	}
 	else {
-		registers[15] = 0;
+		registers[0xF] = 0;
 	}
-	registers[secondNibble] = registers[secondNibble] >> 1;
+	if (secondNibble != 0xF) {
+		registers[secondNibble] = registers[secondNibble] >> 1;
+	}
 	return 0;
 }
 
 int instruction_bitshift_left(char secondNibble, char thirdNibble) {
 	registers[secondNibble] = registers[thirdNibble];
-	char bit_shifted = registers[secondNibble] & 128;
-	if (bit_shifted == 1) {
-		registers[15] = 1;
+	unsigned char bit_shifted = registers[secondNibble] & 128;
+	if (bit_shifted == 128) {
+		registers[0xF] = 1;
 	}
 	else {
-		registers[15] = 0;
+		registers[0xF] = 0;
 	}
-	registers[secondNibble] = registers[secondNibble] << 1;
+	if (secondNibble != 0xF) {
+		registers[secondNibble] = registers[secondNibble] << 1;
+	}
 	return 0;
 }
+
 int instruction_store(char secondNibble) {
 	for (int i = 0; i <= secondNibble; i++) {
 		memory[I + i] = registers[i];
@@ -294,7 +304,7 @@ int instruction_add_to_index(char secondNibble) {
 int instruction_font_char(char secondNibble) {
 	int startAddress = 0x50;
 	char _char = registers[secondNibble] & 0xF;
-	I = memory[startAddress + _char * 5];
+	I = startAddress + _char * 5;
 	return 0;
 }
 
@@ -312,19 +322,29 @@ int instruction_random(char secondNibble, char thirdNibble, char fourthNibble) {
 	return 0;
 }
 
-int instruction_get_key(char secondNibble) {
+int instruction_get_key(char secondNibble) { //FX0A
 	if (keyPressed == nullptr) {
-		instruction_skip();
+		instruction_decrement();
 	}
 	else {
 		char keyPress = decode_keypress((char)*keyPressed);
 		if (keyPress == 'N') {
-			instruction_skip();
+			instruction_decrement();
 		}
 		else {
 			registers[secondNibble] = keyPress;
 		}
 	}
+	return 0;
+}
+
+int instruction_set_reg_from_delay(char secondNibble) {
+	registers[secondNibble] = delay_timer;
+	return 0;
+}
+
+int instruction_set_delay(char secondNibble) {
+	delay_timer = registers[secondNibble];
 	return 0;
 }
 
@@ -335,22 +355,29 @@ int instruction_draw(char x_coor, char y_coor, char n) {
 	char y = (registers[y_coor]); //y coordinate where sprite will start 
 	char x__coor = 0;
 	char y__coor = 0;
+	registers[0xF] = 0; // Reset VF to 0
 
 	// Create a surface for the screen
 	SDL_FillRect(surface, NULL, SDL_MapRGB(surface->format, 0, 0, 0)); // Fill the surface with black
 
 	// starting at x200, read bit of byte and set it to coordinate
 	for (int row = 0; row < length; row++) {
-		// move on to next byte and y coordinate
+		char sprite_byte = memory[sprite_start + row];
 		for (int col = 0; col < 8; col++) {
-			char current_bit = (((memory[I + (row)] << col) & 0x80) >> 7);
-			current_bit = current_bit ^ (display[y + row][x + col]);
-			if ((display[y + row][x + col] == 1) && (current_bit == 0)) {
-				registers[15] = 1;
+			// Check if the current bit in sprite byte is set
+			char current_bit = (sprite_byte >> (7 - col)) & 0x01;
+
+			// Calculate wrapped screen coordinates
+			int wrapped_x = (x + col) % 64; // Screen width is 64 pixels
+			int wrapped_y = (y + row) % 32; // Screen height is 32 pixels
+
+			// Check for collision
+			if (display[wrapped_y][wrapped_x] && current_bit) {
+				registers[0xF] = 1;
 			}
-			x_coor = (x + col) & 0b01111111; //clips at 64
-			y_coor = (y + row) & 0b00111111; //clips at 32
-			display[y_coor][x_coor] = current_bit;
+
+			// XOR the current bit with the display's pixel
+			display[wrapped_y][wrapped_x] ^= current_bit;
 		}
 	}
 
@@ -381,7 +408,7 @@ int decode_instruction(int instruction, int PC) {
 	int sum = 0, difference = 0;
 	char key = 0;
 
-	//printf("%x%x%x%x\n", firstNibble, secondNibble, thirdNibble, fourthNibble);
+	printf("%x%x%x%x\n", firstNibble, secondNibble, thirdNibble, fourthNibble);
 
    	switch (firstNibble)
 	{
@@ -454,25 +481,33 @@ int decode_instruction(int instruction, int PC) {
 			break;
 		case 0x4:
 			sum = (registers[secondNibble] + registers[thirdNibble]);
-			registers[secondNibble] = sum;
+			//overflow
 			if (sum > 255) {
-				registers[15] = 1;
+				registers[0xF] = 1;
 			}
 			else {
-				registers[15] = 0;
-			}
+				registers[0xF] = 0;
+			}			
+			registers[secondNibble] = sum & 0xFF; //keep only lower 8 bits if overflow
 			break;
 
-		case 0x5:
+		case 0x5: {
 			difference = registers[secondNibble] - registers[thirdNibble];
-			if (registers[secondNibble] > registers[thirdNibble]) {
-				registers[15] = 1;
+
+			if (registers[secondNibble] >= registers[thirdNibble]) {
+				registers[0xF] = 1;
 			}
 			else {
-				registers[15] = 0;
+				// Borrow occurred, set VF to 0
+				registers[0xF] = 0;
 			}
-			registers[secondNibble] = difference;
+
+			// Check if VF is VX to avoid overwriting the updated VF value
+			if (secondNibble != 0xF) {
+				registers[secondNibble] = difference & 0xFF;
+			}
 			break;
+		}
 
 		case 0x6:
 			instruction_bitshift_right(secondNibble, thirdNibble);
@@ -482,12 +517,14 @@ int decode_instruction(int instruction, int PC) {
 			difference = registers[thirdNibble] - registers[secondNibble];
 
 			if (registers[thirdNibble] > registers[secondNibble]) {
-				registers[15] = 1;
+				registers[0xF] = 1;
 			}
 			else {
-				registers[15] = 0;
+				registers[0xF] = 0;
 			}
-			registers[secondNibble] = difference;
+			if (secondNibble != 0xF) {
+				registers[secondNibble] = difference & 0xFF;
+			}
 			break;
 
 		case 0xe:
@@ -541,10 +578,31 @@ int decode_instruction(int instruction, int PC) {
 		switch (thirdNibble)
 		{
 		case 0x0:
-			instruction_get_key(secondNibble);
+			switch (fourthNibble) {
+			case 0x7:
+				instruction_set_reg_from_delay(secondNibble);
+				break;
+			case 0xA:
+				instruction_get_key(secondNibble);
+				break;
+			default:
+				break;
+			}
 			break;
 		case 0x1:
-			instruction_add_to_index(secondNibble);
+			switch (fourthNibble) {
+			case 0xE:
+				instruction_add_to_index(secondNibble);
+				break;
+			case 0x5:
+				instruction_set_delay(secondNibble);
+				break;
+			case 0x8:
+				//instruction_set_sound(secondNibble); not implemented
+				break;
+			default:
+				break;
+			}
 			break;
 		case 0x2:
 			instruction_font_char(secondNibble);
@@ -571,58 +629,88 @@ int main(int argc, char* argv[]) {
 	int startAddress = 0x200;
 	PC = startAddress;
 	int instruction = 0;
-	double delay;
+	double clock_frequency = 1000; //configure depending on ROM
+	double delay = 1/clock_frequency;
 
+	//Select ROM
 	//int sizeOfRom = loadRom("IBMLogo.ch8");
-	//int sizeOfRom = loadRom("3-corax+.ch8");
+	//int sizeOfRom = loadRom("3-corax+1.ch8");
 	//int sizeOfRom = loadRom("test_opcode.ch8");
 	//int sizeOfRom = loadRom("4-flags.ch8");
 	//int sizeOfRom = loadRom("5-quirks.ch8");
 	//int sizeOfRom = loadRom("6-keypad.ch8");
 	//int sizeOfRom = loadRom("Tetris [Fran Dachille, 1991].ch8");
-	//int sizeOfRom = loadRom("pong.ch8");
-	int sizeOfRom = loadRom("Space Invaders [David Winter].ch8");
+	int sizeOfRom = loadRom("pong.ch8");
+	//int sizeOfRom = loadRom("Space Invaders [David Winter].ch8");
+	//int sizeOfRom = loadRom("Blinky.ch8");
 
+	//Initialize font and display
 	initFont();
 	if (!initDisplay()) {
 		printf("Failed to initialize display\n");
 	}
+
+	//Main execution
 	else {
 		bool quit = false; //Main loop flag
 		SDL_Event e; //Event handler
-		//While application is running
+		SDL_Keycode keyCode; //Keyboard key SDL code
+		auto current_time = chrono::high_resolution_clock::now(); //Clock start
+		auto current_delay_time = chrono::high_resolution_clock::now(); //for delay timer
+		chrono::duration<double> elapsed;
+		chrono::duration<double> delay_elapsed;
+
+		//Main loop
 		while (!quit)
 		{
-			//Handle events on queue
-			while (SDL_PollEvent(&e) != 0)
+			//Handle quit/keyboard events on queue
+			while (SDL_PollEvent(&e))
 			{
-				//User requests quit
-				if (e.type == SDL_QUIT) 
+				switch (e.type)
 				{
+				case SDL_QUIT:
+					//User requests quit
 					quit = true;
-				}
-				else if (e.type == SDL_KEYDOWN) {
-					SDL_Keycode keyCode = e.key.keysym.sym;
+					break;
+
+				//Handle keypresses
+				case SDL_KEYDOWN:
+					keyCode = e.key.keysym.sym;
 					keyPressed = SDL_GetKeyName(keyCode);
+					break;
+
+				case SDL_KEYUP:
+					keyPressed = nullptr;
+					break;
 				}
 			}
-			if (keyPressed != nullptr) {
-				cout << "\nKey: " << keyPressed << "\n";
-			}
+			//if (keyPressed != nullptr) { //debugging
+			//	//cout << "\nKey: " << keyPressed << "\n";
+			//}
+
+			current_time = chrono::high_resolution_clock::now();
+
+			//Ensuring correct delay between instructions
+			do {
+				elapsed = chrono::high_resolution_clock::now() - current_time;
+			} while (elapsed.count() < delay);
+
+			//Fetch/Decode/Execute
 			if (PC < startAddress + sizeOfRom) {
-				// Delay
-				delay = 0.012;
-				delay *= CLOCKS_PER_SEC;
-				clock_t now = clock();
-				while (clock() - now < delay);
 				// Fetch instruction
 				instruction = (memory[PC] << 8) + (memory[PC + 1]);
-				cout << PC << " ";
+				cout << PC << " "; //debugging
 				PC = PC + 2; //next instruction
- 				// Decode instruction
+				// Decode instruction
 				decode_instruction(instruction, PC);
-				keyPressed = nullptr;
 			}
+
+			//If its been 1/60secs since last update, decrement delay timer
+			delay_elapsed = chrono::high_resolution_clock::now() - current_delay_time;
+			if (delay_elapsed.count() <= (1/timer_frequency) && delay_timer>0) {
+				delay_timer--;
+			}
+			current_delay_time = chrono::high_resolution_clock::now();
 		}
 		destroyDisplay();
 	}
