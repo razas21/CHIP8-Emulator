@@ -1,9 +1,8 @@
 # CHIP8-Emulator
-An emulator for the CHIP-8 Intrepreter
+An emulator for the CHIP-8 Intrepreter. (Currently missing sound)
 
-Currently still a work in progress. Timer and Input opcodes left to implement.  
+![image](https://github.com/razas21/CHIP8-Emulator/assets/60270345/8190e51e-c9db-4688-a318-840b36d67c08)
 
+![image](https://github.com/razas21/CHIP8-Emulator/assets/60270345/16fadc6b-baa6-43f3-8933-bb41e17ba63f)
 
-![Screenshot 2023-05-03 220538](https://user-images.githubusercontent.com/60270345/236095729-4aafbea7-4147-419e-8c19-dd16c27715e3.png)
-
-[IBM Logo.ch8 output] 
+[Space Invaders output] 
